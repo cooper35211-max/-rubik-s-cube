@@ -3,72 +3,100 @@ import numpy as np
 import json
 import os
 
+
+clicked_points = []
+
+def mouse_callback(event, x, y, flags, param):
+    global clicked_points
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if len(clicked_points) < 4:
+            clicked_points.append((x, y))
+        else:
+            clicked_points = [(x, y)]
+
+def get_grid_centers(pts):
+    pts = np.array(pts, dtype="float32")
+    def lerp(p1, p2, t):
+        return p1 + t * (p2 - p1)
+    centers = []
+    steps = [1/6, 3/6, 5/6]
+    for r in steps:
+        for c in steps:
+            left_edge = lerp(pts[0], pts[3], r)
+            right_edge = lerp(pts[1], pts[2], r)
+            point = lerp(left_edge, right_edge, c)
+            centers.append(point.astype(int))
+    return centers
+
+def enhance_image(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    v = clahe.apply(v)
+    s = cv2.convertScaleAbs(s, alpha=1.3, beta=0)
+    enhanced_hsv = cv2.merge([h, s, v])
+    return enhanced_hsv, cv2.cvtColor(enhanced_hsv, cv2.COLOR_HSV2BGR)
+
 def calibrate():
+    global clicked_points
     cap = cv2.VideoCapture(0)
+    cv2.namedWindow("Calibration Tool")
+    cv2.setMouseCallback("Calibration Tool", mouse_callback)
     
-    # 定義要校準的顏色順序
     color_names = ['White (U)', 'Red (R)', 'Green (F)', 'Yellow (D)', 'Orange (L)', 'Blue (B)']
     color_keys = ['U', 'R', 'F', 'D', 'L', 'B']
     calibration_data = {}
 
-    print("--- 魔術方塊顏色校準工具 ---")
-    print("請將方塊的指定顏色對準畫面中央的九宮格，然後按 's' 儲存。")
-
-    cell_size = 40
-    start_x, start_y = 240, 160
-
     idx = 0
+    print("--- 顏色校準工具 (增強版) ---")
+
     while idx < len(color_names):
         ret, frame = cap.read()
         if not ret: break
         
         frame = cv2.flip(frame, 1)
-        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv_frame, bgr_enhanced = enhance_image(frame)
+        display_frame = bgr_enhanced.copy()
         
-        # 繪製九宮格輔助線
-        temp_hsv_list = []
-        for i in range(3):
-            for j in range(3):
-                x1 = start_x + j * (cell_size + 10)
-                y1 = start_y + i * (cell_size + 10)
-                x2 = x1 + cell_size
-                y2 = y1 + cell_size
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 1)
-                
-                # 取得中心區域的平均 HSV
-                roi = hsv_frame[y1:y2, x1:x2]
-                avg_hsv = np.mean(roi, axis=(0, 1))
-                temp_hsv_list.append(avg_hsv.tolist())
+        for p in clicked_points:
+            cv2.circle(display_frame, p, 5, (0, 0, 255), -1)
+        if len(clicked_points) == 4:
+            cv2.line(display_frame, clicked_points[0], clicked_points[1], (0, 255, 0), 2)
+            cv2.line(display_frame, clicked_points[1], clicked_points[2], (0, 255, 0), 2)
+            cv2.line(display_frame, clicked_points[2], clicked_points[3], (0, 255, 0), 2)
+            cv2.line(display_frame, clicked_points[3], clicked_points[0], (0, 255, 0), 2)
+            
+            centers = get_grid_centers(clicked_points)
+            for pt in centers:
+                cv2.circle(display_frame, tuple(pt), 3, (255, 255, 0), -1)
 
-        # 顯示文字說明
-        cv2.putText(frame, f"Calibration Step {idx+1}/{len(color_names)}", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-        cv2.putText(frame, f"Show: {color_names[idx]}", (20, 80), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        cv2.putText(frame, "Press 'S' to Capture | 'Q' to Cancel", (20, 450), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-
-        cv2.imshow("Calibration Tool", frame)
+        cv2.putText(display_frame, f"Calibration: {color_names[idx]}", (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.imshow("Calibration Tool", display_frame)
         
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('s'):
-            # 儲存該顏色的平均 HSV
-            avg_color = np.mean(temp_hsv_list, axis=0)
+        if key == ord('s') and len(clicked_points) == 4:
+            centers = get_grid_centers(clicked_points)
+            hsv_values = []
+            for pt in centers:
+                roi = hsv_frame[max(0, pt[1]-5):pt[1]+5, max(0, pt[0]-5):pt[0]+5]
+                hsv_values.append(np.median(roi, axis=(0, 1)))
+            
+            avg_color = np.mean(hsv_values, axis=0)
             calibration_data[color_keys[idx]] = avg_color.tolist()
-            print(f"已校準 {color_names[idx]}: HSV = {avg_color}")
+            print(f"已儲存 {color_names[idx]}")
             idx += 1
+            clicked_points = []
+        elif key == ord('c'):
+            clicked_points = []
         elif key == ord('q'):
-            print("取消校準")
-            cap.release()
-            cv2.destroyAllWindows()
-            return
+            break
 
-    # 儲存到 JSON 檔案
-    with open('color_config.json', 'w') as f:
-        json.dump(calibration_data, f, indent=4)
-    
-    print("\n校準完成！數據已儲存至 color_config.json")
-    
+    if len(calibration_data) == 6:
+        with open('color_config.json', 'w') as f:
+            json.dump(calibration_data, f, indent=4)
+        print("\n校準完成！")
+
     cap.release()
     cv2.destroyAllWindows()
 

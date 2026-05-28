@@ -1,6 +1,6 @@
 import streamlit as st
 from solver_core import solve_cube
-
+#streamlit run app.py
 st.set_page_config(page_title="Smart Cube Solver", page_icon="🎲")
 
 st.title("🎲 智慧魔術方塊解題器 (Spike)")
